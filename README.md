@@ -15,7 +15,7 @@ Efeito de Neblina (Fog): Integrado ao fragment shader para mesclar os objetos di
 Comportamento Botânico:
 Girassóis calculam vetores de direção (look-at) para o Sol, acompanhando seu movimento.
 Flores menores flutuam, giram e "pulsam" suavemente usando funções trigonométricas de seno/cosseno.
-Geração Matemática de Geometrias: Nenhuma模型o 3D externa (como .obj) foi usada. Todos os cilindros, cones, esferas, pétalas e o plano do chão foram gerados via código JavaScript.
+Geração Matemática de Geometrias: Nenhuma 3D externa (como .obj) foi usada. Todos os cilindros, cones, esferas, pétalas e o plano do chão foram gerados via código JavaScript.
 🎮 Controles
 Tecla / Ação
 Efeito
@@ -31,7 +31,6 @@ WebGL: Para renderização gráfica acelerada por GPU diretamente no navegador.
 GLSL: Linguagem de shading usada para os Vertex e Fragment Shaders (iluminação e neblina).
 Math.js: Biblioteca externa utilizada para facilitar os cálculos de álgebra linear (matrizes de transformação, translação, rotação, perspectiva e produto vetorial/cruzado).
 JavaScript ES6: Lógica da aplicação, criação de buffers e loop de renderização.
-
 🚀 Como Executar
 Como o projeto faz o carregamento de duas texturas externas (log.jpg para os troncos e leaves.jpg para as folhas), é recomendado rodar o projeto através de um servidor local para evitar problemas com a política de CORS dos navegadores.
 

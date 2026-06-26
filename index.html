@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Floresta simulada</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #info {
+            position: absolute; top: 50%; width: 100%; text-align: center;
+            color: white; font-size: 20px; pointer-events: none;
+            text-shadow: 2px 2px 4px black;
+            transition: opacity 0.5s;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js"></script>
+    <script src="lib.js"></script>
+</head>
+<body>
+    <div id="info">WASD para se mover e o mouse para movimentar a câmera</div>
+    <canvas id="glcanvas"></canvas>
+
+    <script>
+    const vsSource = `
+        attribute vec3 aPos;
+        attribute vec3 aNorm;
+        attribute vec2 aUv;
+        
+        uniform mat4 uModel;
+        uniform mat4 uView;
+        uniform mat4 uProj;
+        
+        varying vec3 vNorm;
+        varying vec3 vPos;
+        varying vec2 vUv;
+        
+        void main() {
+            vec4 worldPos = uModel * vec4(aPos, 1.0);
+            vPos = worldPos.xyz;
+            vNorm = mat3(uModel) * aNorm;
+            vUv = aUv;
+            gl_Position = uProj * uView * worldPos;
+        }
+    `;
+
+    const fsSource = `
+        precision mediump float;
+        
+        varying vec3 vNorm;
+        varying vec3 vPos;
+        varying vec2 vUv;
+        
+        uniform vec3 uLightPos;
+        uniform vec3 uLightCol;
+        uniform vec3 uCamPos;
+        uniform vec3 uObjColor;
+        uniform sampler2D uTex;
+        uniform float uUseTex; 
+        uniform float uIsLight; 
+
+        uniform vec3 uFogColor;
+        uniform float uFogNear;
+        uniform float uFogFar;
+        
+        void main() {
+            if(uIsLight > 0.5) {
+                gl_FragColor = vec4(uObjColor, 1.0);
+                return;
+            }
+
+            vec3 norm = normalize(vNorm);
+            vec3 lightDir = normalize(uLightPos - vPos);
+
+            vec3 ambient = 0.15 * uLightCol;
+
+            float diff = max(dot(norm, lightDir), 0.0);
+            vec3 diffuse = diff * uLightCol;
+
+            vec3 viewDir = normalize(uCamPos - vPos);
+            vec3 reflectDir = reflect(-lightDir, norm);
+            float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+            vec3 specular = 0.5 * spec * uLightCol;
+
+            vec3 baseColor = uUseTex > 0.5 ? texture2D(uTex, vUv).rgb : uObjColor;
+
+            vec3 result = (ambient + diffuse) * baseColor + specular;
+
+            float dist = length(vPos - uCamPos);
+            float fog = clamp((dist - uFogNear) / (uFogFar - uFogNear), 0.0, 1.0);
+            result = mix(result, uFogColor, fog);
+
+            gl_FragColor = vec4(result, 1.0);
+        }
+    `;
+
+    function createPlaneGeometry(size, divisions) {
+        const verts = [], norms = [], uvs = [];
+        const step = size / divisions;
+        const half = size / 2;
+        for (let i = 0; i < divisions; i++) {
+            for (let j = 0; j < divisions; j++) {
+                let x0 = -half + i * step, z0 = -half + j * step;
+                let x1 = x0 + step, z1 = z0 + step;
+                verts.push(x0,0,z0,  x1,0,z0,  x0,0,z1);
+                norms.push(0,1,0, 0,1,0, 0,1,0);
+                uvs.push(0,0, 1,0, 0,1);
+                verts.push(x1,0,z0,  x1,0,z1,  x0,0,z1);
+                norms.push(0,1,0, 0,1,0, 0,1,0);
+                uvs.push(1,0, 1,1, 0,1);
+            }
+        }
+        return { v: new Float32Array(verts), n: new Float32Array(norms), u: new Float32Array(uvs), count: verts.length / 3 };
+    }
+
+    function createCylinderGeometry(radius, height, segments) {
+        const verts = [], norms = [], uvs = [];
+        const halfH = height / 2;
+        for (let i = 0; i < segments; i++) {
+            let a1 = (i / segments) * Math.PI * 2;
+            let a2 = ((i + 1) / segments) * Math.PI * 2;
+            let x1 = Math.cos(a1) * radius, z1 = Math.sin(a1) * radius;
+            let x2 = Math.cos(a2) * radius, z2 = Math.sin(a2) * radius;
+            let nx1 = Math.cos(a1), nz1 = Math.sin(a1);
+            let nx2 = Math.cos(a2), nz2 = Math.sin(a2);
+            
+            verts.push(x1,-halfH,z1, x2,-halfH,z2, x1,halfH,z1);
+            norms.push(nx1,0,nz1, nx2,0,nz2, nx1,0,nz1);
+            uvs.push(i/segments,0, (i+1)/segments,0, i/segments,1);
+            
+            verts.push(x2,-halfH,z2, x2,halfH,z2, x1,halfH,z1);
+            norms.push(nx2,0,nz2, nx2,0,nz2, nx1,0,nz1);
+            uvs.push((i+1)/segments,0, (i+1)/segments,1, i/segments,1);
+        }
+        return { v: new Float32Array(verts), n: new Float32Array(norms), u: new Float32Array(uvs), count: verts.length / 3 };
+    }
+
+    function createConeGeometry(radius, height, segments) {
+        const verts = [], norms = [], uvs = [];
+        let slope = Math.sqrt(radius*radius + height*height);
+        let ny = radius / slope;
+        let nr = height / slope;
+        for (let i = 0; i < segments; i++) {
+            let a1 = (i / segments) * Math.PI * 2;
+            let a2 = ((i + 1) / segments) * Math.PI * 2;
+            let x1 = Math.cos(a1) * radius, z1 = Math.sin(a1) * radius;
+            let x2 = Math.cos(a2) * radius, z2 = Math.sin(a2) * radius;
+            
+            verts.push(x1,0,z1, x2,0,z2, 0,height,0);
+            norms.push(Math.cos(a1)*nr, ny, Math.sin(a1)*nr, 
+                       Math.cos(a2)*nr, ny, Math.sin(a2)*nr, 
+                       Math.cos((a1+a2)/2)*nr, ny, Math.sin((a1+a2)/2)*nr);
+            uvs.push(i/segments,0, (i+1)/segments,0, 0.5,1);
+        }
+        return { v: new Float32Array(verts), n: new Float32Array(norms), u: new Float32Array(uvs), count: verts.length / 3 };
+    }
+
+    function createSphereGeometry(radius, latBands, lonBands) {
+        const grid = [];
+        for (let lat = 0; lat <= latBands; lat++) {
+            let theta = lat * Math.PI / latBands;
+            let sinTheta = Math.sin(theta), cosTheta = Math.cos(theta);
+            let row = [];
+            for (let lon = 0; lon <= lonBands; lon++) {
+                let phi = lon * 2 * Math.PI / lonBands;
+                let sinPhi = Math.sin(phi), cosPhi = Math.cos(phi);
+                let x = cosPhi * sinTheta, y = cosTheta, z = sinPhi * sinTheta;
+                let u = 1 - (lon / lonBands), v = 1 - (lat / latBands);
+                row.push({ pos: [radius*x, radius*y, radius*z], norm: [x,y,z], uv: [u,v] });
+            }
+            grid.push(row);
+        }
+
+        const verts = [], norms = [], uvs = [];
+        for (let lat = 0; lat < latBands; lat++) {
+            for (let lon = 0; lon < lonBands; lon++) {
+                let a = grid[lat][lon], b = grid[lat+1][lon], c = grid[lat][lon+1], d = grid[lat+1][lon+1];
+                verts.push(...a.pos, ...b.pos, ...c.pos);
+                norms.push(...a.norm, ...b.norm, ...c.norm);
+                uvs.push(...a.uv, ...b.uv, ...c.uv);
+                verts.push(...b.pos, ...d.pos, ...c.pos);
+                norms.push(...b.norm, ...d.norm, ...c.norm);
+                uvs.push(...b.uv, ...d.uv, ...c.uv);
+            }
+        }
+        return { v: new Float32Array(verts), n: new Float32Array(norms), u: new Float32Array(uvs), count: verts.length / 3 };
+    }
+
+    function createDiscGeometry(radius, segments) {
+        const verts = [], norms = [], uvs = [];
+        for (let i = 0; i < segments; i++) {
+            let a1 = (i / segments) * Math.PI * 2;
+            let a2 = ((i + 1) / segments) * Math.PI * 2;
+            verts.push(0,0,0,
+                       Math.cos(a1)*radius, Math.sin(a1)*radius, 0,
+                       Math.cos(a2)*radius, Math.sin(a2)*radius, 0);
+            norms.push(0,0,1, 0,0,1, 0,0,1);
+            uvs.push(0,0, 0,0, 0,0);
+        }
+        return { v: new Float32Array(verts), n: new Float32Array(norms), u: new Float32Array(uvs), count: verts.length / 3 };
+    }
+
+    function createPetalsGeometry(petalCount, innerRadius, petalLength, petalWidth) {
+        const verts = [], norms = [], uvs = [];
+        for (let i = 0; i < petalCount; i++) {
+            let angle = (i / petalCount) * Math.PI * 2;
+            let c = Math.cos(angle), s = Math.sin(angle);
+            const rot = (x, y) => [x*c - y*s, x*s + y*c];
+
+            let p0 = rot(innerRadius, 0);
+            let p1 = rot(innerRadius + petalLength * 0.4,  petalWidth/2);
+            let p2 = rot(innerRadius + petalLength,        0);
+            let p3 = rot(innerRadius + petalLength * 0.4, -petalWidth/2);
+
+            verts.push(p0[0],p0[1],0,  p1[0],p1[1],0,  p2[0],p2[1],0);
+            norms.push(0,0,1, 0,0,1, 0,0,1);
+            uvs.push(0,0, 0,0, 0,0);
+
+            verts.push(p0[0],p0[1],0,  p2[0],p2[1],0,  p3[0],p3[1],0);
+            norms.push(0,0,1, 0,0,1, 0,0,1);
+            uvs.push(0,0, 0,0, 0,0);
+        }
+        return { v: new Float32Array(verts), n: new Float32Array(norms), u: new Float32Array(uvs), count: verts.length / 3 };
+    }
+
+    const WORLD_HALF = 50.0;
+    const FOG_NEAR = 18.0;
+    const FOG_FAR  = 42.0;
+
+    function wrapCoord(v) {
+        const range = WORLD_HALF * 2.0;
+        return ((v + WORLD_HALF) % range + range) % range - WORLD_HALF;
+    }
+
+    function wrapDelta(a, b) {
+        const range = WORLD_HALF * 2.0;
+        let d = (a - b) % range;
+        if (d > WORLD_HALF) d -= range;
+        if (d < -WORLD_HALF) d += range;
+        return d;
+    }
+
+    const canvas = document.getElementById('glcanvas');
+    const gl = getGL(canvas);
+    resizeCanvasToWindow(canvas);
+    window.addEventListener('resize', () => resizeCanvasToWindow(canvas));
+
+    const keys = {};
+    let yaw = -90, pitch = 0;
+    const camPos = [0.0, 1.5, 5.0];
+
+    window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+    window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+    canvas.addEventListener('click', () => {
+        canvas.requestPointerLock();
+        document.getElementById('info').style.opacity = '0';
+    });
+    document.addEventListener('mousemove', e => {
+        if (document.pointerLockElement === canvas) {
+            yaw += e.movementX * 0.1;
+            pitch -= e.movementY * 0.1;
+            pitch = Math.max(-89, Math.min(89, pitch));
+        }
+    });
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.02, 0.02, 0.05, 1.0);
+
+    const prog = createProgram(gl, createShader(gl, gl.VERTEX_SHADER, vsSource), createShader(gl, gl.FRAGMENT_SHADER, fsSource));
+    
+    const loc = {
+        aPos: gl.getAttribLocation(prog, "aPos"),
+        aNorm: gl.getAttribLocation(prog, "aNorm"),
+        aUv: gl.getAttribLocation(prog, "aUv"),
+        uModel: gl.getUniformLocation(prog, "uModel"),
+        uView: gl.getUniformLocation(prog, "uView"),
+        uProj: gl.getUniformLocation(prog, "uProj"),
+        uLightPos: gl.getUniformLocation(prog, "uLightPos"),
+        uLightCol: gl.getUniformLocation(prog, "uLightCol"),
+        uCamPos: gl.getUniformLocation(prog, "uCamPos"),
+        uObjColor: gl.getUniformLocation(prog, "uObjColor"),
+        uUseTex: gl.getUniformLocation(prog, "uUseTex"),
+        uTex: gl.getUniformLocation(prog, "uTex"),
+        uIsLight: gl.getUniformLocation(prog, "uIsLight"),
+        uFogColor: gl.getUniformLocation(prog, "uFogColor"),
+        uFogNear: gl.getUniformLocation(prog, "uFogNear"),
+        uFogFar: gl.getUniformLocation(prog, "uFogFar")
+    };
+    gl.useProgram(prog);
+    gl.uniform1i(loc.uTex, 0);
+
+    let logTex = null, leavesTex = null;
+    let texturesLoaded = 0;
+    let renderStarted = false;
+    const TEXTURES_TO_LOAD = 2;
+
+    function startRenderOnce() {
+        if (renderStarted) return;
+        renderStarted = true;
+        requestAnimationFrame(render);
+    }
+
+    function onTextureLoaded() {
+        texturesLoaded++;
+        if (texturesLoaded === TEXTURES_TO_LOAD) startRenderOnce();
+    }
+
+    setTimeout(function() {
+        if (!renderStarted) {
+            console.warn('Tempo de carregamento excedido.');
+            startRenderOnce();
+        }
+    }, 5000);
+
+    const texCanvas = document.createElement('canvas');
+    texCanvas.width = 64; texCanvas.height = 64;
+    const tCtx = texCanvas.getContext('2d');
+    tCtx.fillStyle = '#1a4d1a'; tCtx.fillRect(0,0,64,64);
+    for(let i=0; i<500; i++) {
+        tCtx.fillStyle = `rgb(${20+Math.random()*30}, ${50+Math.random()*60}, ${10+Math.random()*20})`;
+        tCtx.fillRect(Math.random()*64, Math.random()*64, 2, 4);
+    }
+    const grassTex = createTexture(gl, texCanvas, 0);
+    gl.bindTexture(gl.TEXTURE_2D, grassTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+
+    loadTexture(gl, 'log.jpg', 1, function(tex) { logTex = tex; onTextureLoaded(); }, onTextureLoaded);
+    loadTexture(gl, 'leaves.jpg', 2, function(tex) { leavesTex = tex; onTextureLoaded(); }, onTextureLoaded);
+
+    function setupMesh(geometry) {
+        return {
+            vbo: createBuffer(gl, geometry.v),
+            nbo: createBuffer(gl, geometry.n),
+            ubo: createBuffer(gl, geometry.u),
+            count: geometry.count
+        };
+    }
+
+    const meshGround = setupMesh(createPlaneGeometry(260, 100));
+    const meshTrunk  = setupMesh(createCylinderGeometry(0.2, 2.0, 8));
+    const meshLeaves = setupMesh(createConeGeometry(1.5, 3.0, 8));
+    const meshSun    = setupMesh(createSphereGeometry(4.0, 24, 24));
+    const meshMoon   = setupMesh(createSphereGeometry(3.0, 24, 24));
+    const meshFlowerStem   = setupMesh(createCylinderGeometry(0.04, 0.9, 8));
+    const meshFlowerCore   = setupMesh(createDiscGeometry(0.18, 12));
+    const meshFlowerPetals = setupMesh(createPetalsGeometry(12, 0.18, 0.32, 0.18));
+
+    const trees = [];
+    const TREE_SPREAD = WORLD_HALF - 2.0;
+    for (let i = 0; i < 110; i++) {
+        trees.push({
+            x: (Math.random() - 0.5) * 2 * TREE_SPREAD,
+            z: (Math.random() - 0.5) * 2 * TREE_SPREAD,
+            scale: 0.8 + Math.random() * 1.5
+        });
+    }
+
+    const sunflowers = [];
+    const SUNFLOWER_CLUSTER_RADIUS = 2.5;
+    const STEM_HEIGHT = 0.9;
+    for (let i = 0; i < 10; i++) {
+        let r = Math.sqrt(Math.random()) * SUNFLOWER_CLUSTER_RADIUS; 
+        let theta = Math.random() * Math.PI * 2;
+        sunflowers.push({
+            x: Math.cos(theta) * r,
+            z: Math.sin(theta) * r,
+            scale: 0.5 + Math.random() * 0.3,
+            wiltAngle: Math.random() * Math.PI * 2 
+        });
+    }
+
+    const flowers = [];
+    for (let i = 0; i < 40; i++) {
+        flowers.push({
+            x: (Math.random() - 0.5) * 2 * TREE_SPREAD,
+            z: (Math.random() - 0.5) * 2 * TREE_SPREAD,
+            scale: 0.3 + Math.random() * 0.3,
+            rotSpeed: 40 + Math.random() * 80,
+            bobSpeed: 1.0 + Math.random() * 2.0,
+            petalColor: [
+                0.6 + Math.random() * 0.4,
+                0.2 + Math.random() * 0.4,
+                0.5 + Math.random() * 0.5
+            ]
+        });
+    }
+
+    let lastTime = 0;
+    const ORBIT_RADIUS = 50.0;
+    const ORBIT_OFFSET = 5.0;
+    const ORBIT_TILT   = Math.PI / 5; 
+
+    function render(time) {
+        let dt = (time - lastTime) * 0.001;
+        lastTime = time;
+        
+        let radYaw = yaw * Math.PI / 180.0;
+        let forward = [Math.cos(radYaw), 0, Math.sin(radYaw)];
+        let right = [Math.cos(radYaw + Math.PI/2), 0, Math.sin(radYaw + Math.PI/2)];
+        let speed = 5.0 * dt;
+
+        if (keys['w']) { camPos[0] += forward[0]*speed; camPos[2] += forward[2]*speed; }
+        if (keys['s']) { camPos[0] -= forward[0]*speed; camPos[2] -= forward[2]*speed; }
+        if (keys['a']) { camPos[0] -= right[0]*speed;   camPos[2] -= right[2]*speed; }
+        if (keys['d']) { camPos[0] += right[0]*speed;   camPos[2] += right[2]*speed; }
+
+        camPos[0] = wrapCoord(camPos[0]);
+        camPos[2] = wrapCoord(camPos[2]);
+
+        let moonAngle = (time * 0.00015) % (Math.PI * 2.0);
+        let moonX = camPos[0] + Math.cos(moonAngle) * ORBIT_RADIUS * Math.cos(ORBIT_TILT);
+        let moonY = camPos[1] + Math.sin(moonAngle) * ORBIT_RADIUS + ORBIT_OFFSET;
+        let moonZ = camPos[2] + Math.cos(moonAngle) * ORBIT_RADIUS * Math.sin(ORBIT_TILT);
+       
+        let sunAngle = (moonAngle + Math.PI) % (Math.PI * 2.0);
+        let sunX = camPos[0] + Math.cos(sunAngle) * ORBIT_RADIUS * Math.cos(ORBIT_TILT);
+        let sunY = camPos[1] + Math.sin(sunAngle) * ORBIT_RADIUS + ORBIT_OFFSET;
+        let sunZ = camPos[2] + Math.cos(sunAngle) * ORBIT_RADIUS * Math.sin(ORBIT_TILT);
+
+        let dayFactor = Math.max(0, Math.min(1, ((sunY - camPos[1]) + 10.0) / 30.0));
+        let nightSky = [0.02, 0.02, 0.05];
+        let daySky   = [0.45, 0.65, 0.85];
+        let skyColor = [
+            nightSky[0] + (daySky[0] - nightSky[0]) * dayFactor,
+            nightSky[1] + (daySky[1] - nightSky[1]) * dayFactor,
+            nightSky[2] + (daySky[2] - nightSky[2]) * dayFactor
+        ];
+        gl.clearColor(skyColor[0], skyColor[1], skyColor[2], 1.0);
+
+        let currentLightPos = [
+            sunX + (moonX - sunX) * (1.0 - dayFactor),
+            sunY + (moonY - sunY) * (1.0 - dayFactor),
+            sunZ + (moonZ - sunZ) * (1.0 - dayFactor)
+        ];
+        let sunC = [1.0, 0.82, 0.45];
+        let moonC = [0.6, 0.65, 0.8];
+        let currentLightCol = [
+            sunC[0] + (moonC[0] - sunC[0]) * (1.0 - dayFactor),
+            sunC[1] + (moonC[1] - sunC[1]) * (1.0 - dayFactor),
+            sunC[2] + (moonC[2] - sunC[2]) * (1.0 - dayFactor)
+        ];
+
+        let proj = createPerspective(60, canvas.width / canvas.height, 0.1, 300.0);
+        let view = camera(camPos, yaw, pitch);
+
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.useProgram(prog);
+
+        gl.uniformMatrix4fv(loc.uProj, false, math.flatten(math.transpose(proj))._data);
+        gl.uniformMatrix4fv(loc.uView, false, math.flatten(math.transpose(view))._data);
+        gl.uniform3fv(loc.uCamPos, camPos);
+
+        gl.uniform3fv(loc.uLightPos, currentLightPos);
+        gl.uniform3fv(loc.uLightCol, currentLightCol);
+
+        gl.uniform3f(loc.uFogColor, skyColor[0], skyColor[1], skyColor[2]);
+        gl.uniform1f(loc.uFogNear, FOG_NEAR);
+        gl.uniform1f(loc.uFogFar, FOG_FAR);
+
+        function drawMesh(mesh, modelMatrix, color, useTex, isLightSource, texUnit) {
+            sendMatrixUniform(gl, prog, "uModel", modelMatrix);
+            gl.uniform3fv(loc.uObjColor, color);
+            gl.uniform1f(loc.uUseTex, useTex ? 1.0 : 0.0);
+            if (useTex) gl.uniform1i(loc.uTex, texUnit || 0);
+            gl.uniform1f(loc.uIsLight, isLightSource ? 1.0 : 0.0);
+            
+            gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
+            gl.vertexAttribPointer(loc.aPos, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(loc.aPos);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, mesh.nbo);
+            gl.vertexAttribPointer(loc.aNorm, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(loc.aNorm);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, mesh.ubo);
+            gl.vertexAttribPointer(loc.aUv, 2, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(loc.aUv);
+
+            gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
+        }
+
+        drawMesh(meshGround, createTranslation(0, 0, 0), [0.12, 0.45, 0.15], !!grassTex, false, 0);
+
+        trees.forEach(t => {
+            let rx = camPos[0] + wrapDelta(t.x, camPos[0]);
+            let rz = camPos[2] + wrapDelta(t.z, camPos[2]);
+            let mTrunk = math.multiply(createTranslation(rx, 1.0 * t.scale, rz), createScale(t.scale, t.scale, t.scale));
+            drawMesh(meshTrunk, mTrunk, [0.4, 0.2, 0.05], !!logTex, false, 1);
+            let mLeaves = math.multiply(createTranslation(rx, 1.8 * t.scale, rz), createScale(t.scale, t.scale, t.scale));
+            drawMesh(meshLeaves, mLeaves, [0.05, 0.3, 0.05], !!leavesTex, false, 2);
+        });
+
+        drawMesh(meshMoon, createTranslation(moonX, moonY, moonZ), [1.0, 1.0, 0.9], false, true);
+        drawMesh(meshSun, createTranslation(sunX, sunY, sunZ), [1.0, 0.8, 0.35], false, true);
+
+        sunflowers.forEach(f => {
+            let rx = camPos[0] + wrapDelta(f.x, camPos[0]);
+            let rz = camPos[2] + wrapDelta(f.z, camPos[2]);
+
+            let mStem = math.multiply(createTranslation(rx, STEM_HEIGHT/2 * f.scale, rz), createScale(f.scale, f.scale, f.scale));
+            drawMesh(meshFlowerStem, mStem, [0.30, 0.45, 0.12], false, false);
+
+            let headPos = [rx, STEM_HEIGHT * f.scale, rz];
+            let frontSun = math.subtract([sunX, sunY, sunZ], headPos);
+            let sunLen = math.norm(frontSun);
+            frontSun = sunLen > 0.0001 ? math.divide(frontSun, sunLen) : [0, 1, 0];
+
+            let frontWilt = [Math.cos(f.wiltAngle) * 0.5, -1.0, Math.sin(f.wiltAngle) * 0.5];
+            frontWilt = math.divide(frontWilt, math.norm(frontWilt));
+
+            let blendedFront = [
+                frontWilt[0] + (frontSun[0] - frontWilt[0]) * dayFactor,
+                frontWilt[1] + (frontSun[1] - frontWilt[1]) * dayFactor,
+                frontWilt[2] + (frontSun[2] - frontWilt[2]) * dayFactor
+            ];
+            let basis = computeBasisFromFront(blendedFront);
+
+            let headScale = f.scale * (0.7 + 0.3 * dayFactor);
+            let mHead = math.multiply(createOrientedMatrix(headPos, basis), createScale(headScale, headScale, headScale));
+
+            let coreColor  = [0.18 + 0.17 * dayFactor, 0.12 + 0.08 * dayFactor, 0.05];
+            let petalColor = [0.35 + 0.65 * dayFactor, 0.28 + 0.54 * dayFactor, 0.12 - 0.02 * dayFactor];
+
+            drawMesh(meshFlowerCore, mHead, coreColor, false, false);
+            drawMesh(meshFlowerPetals, mHead, petalColor, false, false);
+        });
+
+        flowers.forEach(f => {
+            let rx = camPos[0] + wrapDelta(f.x, camPos[0]);
+            let rz = camPos[2] + wrapDelta(f.z, camPos[2]);
+
+            let mStem = math.multiply(
+                createTranslation(rx, 0.3 * f.scale, rz), 
+                createScale(f.scale, f.scale, f.scale)
+            );
+            drawMesh(meshFlowerStem, mStem, [0.15, 0.45, 0.1], false, false);
+
+            let timeSec = time * 0.001; 
+            let bobOffsetY = Math.sin(timeSec * f.bobSpeed) * 0.15; 
+            let spinAngle = timeSec * f.rotSpeed; 
+            let pulseFactor = 1.0 + Math.sin(timeSec * 2.5) * 0.2; 
+
+            let mTranslation = createTranslation(rx, 0.7 * f.scale + bobOffsetY, rz);
+            let mRotation = createRotationY(spinAngle);
+            let mScale = createScale(f.scale * pulseFactor, f.scale * pulseFactor, f.scale * pulseFactor);
+
+            let mHead = math.multiply(mTranslation, math.multiply(mRotation, mScale));
+
+            drawMesh(meshFlowerCore, mHead, [1.0, 0.9, 0.2], false, false);
+            drawMesh(meshFlowerPetals, mHead, f.petalColor, false, false);   
+        });
+        
+        requestAnimationFrame(render);
+    }
+    </script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+REQUISITOS GERAIS CUMPRIDOS
+
+I) Movimentação de câmera com projeção perspectiva
+Cumprido na função render() do index.html. A projeção é criada chamando createPerspective(60, canvas.width / canvas.height, 0.1, 300.0) do lib.js. A câmera se move atualizando as variáveis yaw, pitch e o array camPos com as teclas WASD.
+
+II) Sistema de iluminação utilizando o modelo de reflexão de Phong, com movimentação de pelo menos uma fonte de luz
+Cumprido no Fragment Shader (fsSource) no index.html, que calcula explicitamente as componentes ambient (0.15 * uLightCol), diffuse (max(dot)) e specular (pow max dot reflect). A luz se move porque a posição uLightPos é calculada dinamicamente na função render() usando variáveis de tempo (moonAngle e sunAngle) que giram em torno do jogador.
+
+III) Pelo menos um objeto animado por meio de transformações geométricas
+Cumprido no loop das flores comuns dentro da função render() do index.html. As flores giram usando createRotationY(spinAngle) e sobem/descem usando createTranslation com o eixo Y recebendo Math.sin(timeSec * f.bobSpeed) * 0.15. Os girassóis também se animam rotacionando sua cabeça em direção ao sol.
+
+IV) Um objeto com textura
+Cumprido no desenho do chão e das árvores na função render() do index.html. A função drawMesh é chamada passando true no parâmetro useTex para os meshes meshGround, meshTrunk e meshLeaves, ativando as texturas grassTex, logTex e leavesTex que foram carregadas via loadTexture.
+
+V) Um objeto com cor sólida
+Cumprido no desenho do Sol e da Lua na função render() do index.html. A função drawMesh é chamada passando false no parâmetro useTex e passando arrays de cores fixas como [1.0, 0.8, 0.35] para o Sol e [1.0, 1.0, 0.9] para a Lua.
+
+VI) O desenho da cena deve ser feito exclusivamente com WebGL puros
+Cumprido. Todo o desenho é feito usando a API nativa do WebGL, como gl.createBuffer, gl.bufferData, gl.vertexAttribPointer e gl.drawArrays(gl.TRIANGLES, ...). Não foi usada nenhuma engine gráfica como Three.js.
+
+VII) É permitido apenas o uso de bibliotecas auxiliares para Álgebra Linear
+Cumprido. A única biblioteca externa importada no index.html é o mathjs (math.min.js), que é usada exclusivamente para criar matrizes, fazer multiplicações de matrizes (math.multiply) e calcular produtos vetoriais (math.cross) e normas (math.norm).
+
+VIII) É permitida a criação de contexto gráfico como Canvas, sendo vedado o uso de qualquer função gráfica além da inicialização
+Cumprido. O canvas do HTML5 é usado apenas para obter o contexto WebGL via getGL(canvas). A função de desenho 2D do canvas não é usada para renderizar a cena 3D.
+
+VIII - parte 2) É permitido utilizar bibliotecas extras apenas para captura de eventos de teclado e mouse
+Cumprido. Não foram usadas bibliotecas extras para isso, apenas as APIs nativas do navegador: window.addEventListener('keydown'), window.addEventListener('keyup') e document.addEventListener('mousemove').
+
+REQUISITOS ESPECÍFICOS DO PASSEIO VIRTUAL 3D CUMPRIDOS
+
+I) Implementação de câmera em primeira pessoa
+Cumprido na função camera(pos, y, p) no lib.js. Ela constrói uma matriz de visualização (View) calculando vetores front, right e up a partir de ângulos, simulando a visão de uma pessoa, e depois aplica uma translação negativa da posição para centralizar o mundo na câmera.
+
+II) Controle da câmera via teclado (setas ou WASD), opcionalmente mouse
+Cumprido na função render() e nos event listeners do index.html. O teclado é lido com if(keys['w']), if(keys['s']), etc, modificando o array camPos. O mouse é capturado usando canvas.requestPointerLock() e o movimento é lido em document.addEventListener('mousemove') modificando yaw e pitch.
+
+III) Não é necessária detecção de colisão realista
+Cumprido. O código não implementa nenhuma verificação de colisão. Quando o jogador aperta W, a posição camPos é somada diretamente para frente, permitindo atravessar árvores e flores.
+
+IV) O cenário deve ser construído manualmente no código, não sendo permitido importar modelos externos
+Cumprido. Todas as geometrias (chão, troncos, folhas, esferas, pétalas) foram construídas proceduralmente no index.html através de funções como createPlaneGeometry, createCylinderGeometry, createConeGeometry e createPetalsGeometry, que calculam vértices, normais e UVs matematicamente e os empilham em Float32Arrays. Nenhum arquivo .obj, .gltf ou .fbx foi importado.
